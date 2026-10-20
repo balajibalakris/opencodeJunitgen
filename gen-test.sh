@@ -3,42 +3,40 @@ set -e
 
 SOURCE_FILE="$1"
 
-# --- 1. Validation ---
 if [ -z "$SOURCE_FILE" ]; then
-    echo "❌ Error: No file provided."
-    echo "Usage: ./scripts/gen-test.sh <path-to-java-file>"
+    echo "❌ Error: No file path provided."
     exit 1
 fi
 
-if [[ "$SOURCE_FILE" != *.java ]]; then
-    echo "❌ Error: '$SOURCE_FILE' is not a Java file."
+# Convert all backslashes '\' to forward slashes '/' for consistent matching
+NORMALIZED_FILE="${SOURCE_FILE//\\//}"
+
+# Check for src/main/java anywhere in the hierarchy (case-insensitive)
+shopt -s nocasematch
+if [[ "$NORMALIZED_FILE" != *"src/main/java"* ]]; then
+    echo "❌ Error: Could not find 'src/main/java' in the path."
+    echo "Received Path: $SOURCE_FILE"
     exit 1
 fi
+shopt -u nocasematch
 
-if [[ "$SOURCE_FILE" != *"src/main/java"* ]]; then
-    echo "❌ Error: The file must be inside 'src/main/java'."
-    exit 1
-fi
-
-# --- 2. Calculate Target Test Path and Module ---
-CLASS_NAME=$(basename "$SOURCE_FILE" .java)
+CLASS_NAME=$(basename "$NORMALIZED_FILE" .java)
 TEST_CLASS_NAME="${CLASS_NAME}Test"
 
-# Replace 'src/main/java' with 'src/test/java' and append 'Test.java'
-TARGET_TEST_FILE="${SOURCE_FILE/src\/main\/java/src\/test\/java}"
+# Replace 'src/main/java' with 'src/test/java' anywhere in the hierarchy
+TARGET_TEST_FILE="${NORMALIZED_FILE/src\/main\/java/src\/test\/java}"
 TARGET_TEST_FILE="${TARGET_TEST_FILE%.java}Test.java"
 TARGET_TEST_DIR=$(dirname "$TARGET_TEST_FILE")
 
 echo "=================================================="
-echo "🎯 Source Class : $CLASS_NAME ($SOURCE_FILE)"
+echo "🎯 Source Class : $CLASS_NAME"
 echo "📁 Target Test   : $TARGET_TEST_FILE"
 echo "=================================================="
 
-# Create the test directory structure if it doesn't exist
+# Create the test directory structure
 mkdir -p "$TARGET_TEST_DIR"
 
-# --- 3. Locate Project Root & agents.md ---
-# Find project root where pom.xml or .git resides
+# Locate Project Root & agents.md
 PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 
 AGENTS_FILE=""
@@ -48,11 +46,6 @@ elif [ -f "$PROJECT_ROOT/AGENTS.md" ]; then
     AGENTS_FILE="$PROJECT_ROOT/AGENTS.md"
 fi
 
-if [ -n "$AGENTS_FILE" ]; then
-    echo "📋 Found project instructions at: $(basename "$AGENTS_FILE")"
-fi
-
-# --- 4. Construct Prompt & Run OpenCode ---
 PROMPT_TMP=$(mktemp)
 
 cat <<EOF > "$PROMPT_TMP"
@@ -62,9 +55,9 @@ Source file to test: $SOURCE_FILE
 Output file to create/overwrite: $TARGET_TEST_FILE
 
 $(if [ -n "$AGENTS_FILE" ]; then
-    echo "--- PROJECT CODING STANDARDS (from $(basename "$AGENTS_FILE")) ---"
+    echo "--- PROJECT CODING STANDARDS ---"
     cat "$AGENTS_FILE"
-    echo "---------------------------------------------------------"
+    echo "--------------------------------"
 fi)
 
 STRICT REQUIREMENTS:
@@ -84,7 +77,6 @@ opencode "Read $PROMPT_TMP and write the unit test file to $TARGET_TEST_FILE."
 
 rm -f "$PROMPT_TMP"
 
-# --- 5. Verify the Generated Test ---
 if [ ! -f "$TARGET_TEST_FILE" ]; then
     echo "❌ Error: OpenCode did not create $TARGET_TEST_FILE."
     exit 1
@@ -92,18 +84,7 @@ fi
 
 echo "🧪 Running single test execution via Maven..."
 cd "$PROJECT_ROOT"
+MAVEN_CMD="./mvnw"
+[ ! -f "$MAVEN_CMD" ] && MAVEN_CMD="mvn"
 
-if [ -f "./mvnw" ]; then
-    MAVEN_CMD="./mvnw"
-else
-    MAVEN_CMD="mvn"
-fi
-
-# Run only this specific test class
 $MAVEN_CMD test -Dtest="$TEST_CLASS_NAME"
-
-if [ $? -eq 0 ]; then
-    echo "✅ Success! $TEST_CLASS_NAME generated and passed all tests."
-else
-    echo "⚠️ $TEST_CLASS_NAME was created but failed to pass/compile. Review the test file."
-fi
